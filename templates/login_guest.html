@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PartyQueue</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div class="logo">Party<span>Queue</span></div>
+  </div>
+
+  <div class="login-card">
+    <h2>Wie heißt du?</h2>
+    <p style="color:var(--muted);font-size:0.9rem;margin-bottom:1.2rem;">Damit alle sehen, von wem der Wunsch kommt.</p>
+    {% if error %}<div class="error-msg">{{ error }}</div>{% endif %}
+    <form method="POST" action="/">
+      <input type="text" name="name" placeholder="Dein Vorname" autofocus maxlength="30" autocomplete="off">
+      <button type="submit" class="btn btn-primary">Los geht's</button>
+    </form>
+  </div>
+</div>
+</body>
+</html>

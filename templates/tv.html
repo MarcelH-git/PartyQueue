@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PartyQueue TV</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="tv-body">
+
+<div id="start-screen" style="position:fixed;inset:0;background:#000;display:flex;align-items:center;justify-content:center;z-index:100;cursor:pointer;">
+  <div style="text-align:center;color:white;">
+    <div style="font-size:5rem;">▶</div>
+    <div style="font-size:1.5rem;margin-top:1rem;">Antippen zum Starten</div>
+  </div>
+</div>
+
+<div id="empty-screen">
+  <div style="text-align:center;">
+    <div class="empty-text" style="margin-bottom:1.5rem;">Queue ist leer</div>
+    {% if qr %}
+    <img src="data:image/png;base64,{{ qr }}" style="width:180px;height:180px;border-radius:8px;" alt="QR Code">
+    {% endif %}
+  </div>
+</div>
+
+<div id="player-wrap">
+  <video id="yt-player" playsinline style="width:100%;height:100%;background:#000;"></video>
+</div>
+
+<div id="tv-overlay" style="display:none;">
+  <div class="now-playing" id="now-title"></div>
+  <div class="next-up" id="next-up"></div>
+</div>
+
+<script>
+let queue = {{ queue | tojson }};
+let currentId = null;
+let loadingId = null;
+let started = false;
+const video = document.getElementById('yt-player');
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+let nextUpTimer = null;
+
+function updateOverlay() {
+  const overlay = document.getElementById('tv-overlay');
+  if (queue.length === 0) {
+    overlay.style.display = 'none';
+    return;
+  }
+  document.getElementById('now-title').textContent = '▶ ' + queue[0].title;
+  overlay.style.display = 'block';
+}
+
+function showNextUp() {
+  const nextEl = document.getElementById('next-up');
+  if (queue.length > 1) {
+    nextEl.innerHTML = `<div class="next-item">▸ Als nächstes: ${escHtml(queue[1].title)}</div>`;
+    nextEl.style.opacity = '1';
+    clearTimeout(nextUpTimer);
+    nextUpTimer = setTimeout(() => {
+      nextEl.style.transition = 'opacity 1s';
+      nextEl.style.opacity = '0';
+      setTimeout(() => { nextEl.innerHTML = ''; }, 1000);
+    }, 5000);
+  } else {
+    nextEl.innerHTML = '';
+  }
+}
+
+function showEmpty(yes) {
+  document.getElementById('empty-screen').style.display = yes ? 'flex' : 'none';
+  document.getElementById('player-wrap').style.display = yes ? 'none' : 'block';
+}
+
+async function skipAndAdvance() {
+  currentId = null;
+  loadingId = null;
+  if (queue.length === 0) return;
+  const res = await fetch('/skip', { method: 'POST', headers: {'X-Requested-With': 'XMLHttpRequest', 'X-TV-Request': '1'} });
+  const data = await res.json();
+  queue = data.queue;
+  updateOverlay();
+  playCurrentOrEmpty();
+}
+
+async function refreshQueue() {
+  const res = await fetch('/queue.json');
+  const data = await res.json();
+  queue = data.queue;
+  updateOverlay();
+  if (data.paused && !video.paused) {
+    video.pause();
+  } else if (!data.paused && video.paused && currentId) {
+    video.play().catch(() => {});
+  }
+  if (queue.length > 1) {
+    fetch(`/stream_url/${queue[1].youtube_id}`).catch(() => {});
+  }
+}
+
+async function playCurrentOrEmpty() {
+  if (!started) return;
+  if (queue.length === 0) {
+    showEmpty(true);
+    currentId = null;
+    return;
+  }
+  const vid = queue[0];
+  if (vid.youtube_id === currentId) return;
+  if (loadingId === vid.youtube_id) return;
+  loadingId = vid.youtube_id;
+  showEmpty(false);
+
+  try {
+    const res = await fetch(`/stream_url/${vid.youtube_id}`);
+    const data = await res.json();
+    if (loadingId !== vid.youtube_id) return;
+    if (data.error) {
+      console.error('stream_url error:', data.error);
+      loadingId = null;
+      setTimeout(skipAndAdvance, 2000);
+      return;
+    }
+    currentId = vid.youtube_id;
+    video.src = data.url;
+    video.play().catch(() => {});
+    showNextUp();
+  } catch(e) {
+    console.error(e);
+    loadingId = null;
+    setTimeout(skipAndAdvance, 2000);
+    return;
+  }
+  loadingId = null;
+}
+
+document.getElementById('start-screen').addEventListener('click', () => {
+  document.getElementById('start-screen').style.display = 'none';
+  started = true;
+  updateOverlay();
+  if (queue.length > 0) {
+    playCurrentOrEmpty();
+  } else {
+    showEmpty(true);
+  }
+});
+
+video.addEventListener('ended', () => skipAndAdvance());
+video.addEventListener('error', () => { if (video.src) setTimeout(skipAndAdvance, 2000); });
+
+let lastNowPlaying = 0;
+video.addEventListener('timeupdate', () => {
+  const now = Date.now();
+  if (now - lastNowPlaying < 2000) return;
+  lastNowPlaying = now;
+  const ct = video.currentTime;
+  const dur = video.duration;
+  if (dur > 0) {
+    fetch('/nowplaying', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({current_time: ct, duration: dur})
+    });
+  }
+});
+
+setInterval(async () => {
+  await refreshQueue();
+  if (started && currentId && !video.paused) {
+    const dur = isFinite(video.duration) && video.duration > 0 ? video.duration : null;
+    if (dur && video.currentTime > 0 && (dur - video.currentTime) < 2) {
+      skipAndAdvance();
+      return;
+    }
+  }
+  if (started) {
+    if (queue.length > 0) {
+      playCurrentOrEmpty();
+    } else {
+      if (currentId !== null) {
+        video.pause();
+        video.removeAttribute('src');
+        currentId = null;
+        loadingId = null;
+      }
+      showEmpty(true);
+    }
+  }
+}, 2000);
+
+// Vor dem Start schon die Queue prefetchen
+updateOverlay();
+</script>
+</body>
+</html>

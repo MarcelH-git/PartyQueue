@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PartyQueue</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div class="logo">Party<span>Queue</span></div>
+    <a href="/logout_guest" class="guest-name-badge" title="Namen ändern">{{ guest_name }}</a>
+  </div>
+
+  <div class="add-form">
+    <h2>Liedwunsch hinzufügen</h2>
+    <div class="input-row">
+      <input type="text" id="raw-input" placeholder="Songtitel oder YouTube-Link…" autocomplete="off">
+      <button class="btn btn-primary" onclick="addVideo()">Suchen</button>
+    </div>
+    <div id="search-results"></div>
+  </div>
+
+  <div class="queue-section">
+    <h2>Warteschlange (<span id="queue-count">{{ queue|length }}</span>)</h2>
+    <ul class="queue-list" id="queue-list">
+      {% if queue %}
+        {% for item in queue %}
+        <li class="queue-item {% if loop.first %}playing{% endif %}">
+          <span class="queue-num">{{ loop.index }}</span>
+          <div class="queue-title-wrap">
+            <span class="queue-title">{{ item.title }}</span>
+            <span class="queue-by">von {{ item.added_by }}</span>
+          </div>
+          {% if loop.first %}<span class="now-badge">LÄUFT</span>{% endif %}
+        </li>
+        {% endfor %}
+      {% else %}
+        <li class="empty-msg">Noch keine Videos — füge das erste hinzu!</li>
+      {% endif %}
+    </ul>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const YOUTUBE_URL_RE = /(?:v=|youtu\.be\/|embed\/|shorts\/)([A-Za-z0-9_-]{11})/;
+
+function showToast(msg, duration = 2500) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), duration);
+}
+
+let searchTimeout = null;
+
+async function addVideo() {
+  const raw = document.getElementById('raw-input').value.trim();
+  if (!raw) return;
+  const urlMatch = raw.match(YOUTUBE_URL_RE);
+  if (urlMatch) {
+    await submitVideo(urlMatch[1], `Video (${urlMatch[1]})`);
+  } else {
+    await doSearch(raw);
+  }
+}
+
+async function submitVideo(youtube_id, title, duration) {
+  const fd = new FormData();
+  fd.append('youtube_id', youtube_id);
+  fd.append('title', title);
+  if (duration) fd.append('duration', duration);
+  const res = await fetch('/add', {
+    method: 'POST', body: fd,
+    headers: {'X-Requested-With': 'XMLHttpRequest'}
+  });
+  const data = await res.json();
+  if (data.ok) {
+    showToast('Hinzugefügt: ' + title);
+    document.getElementById('raw-input').value = '';
+    document.getElementById('search-results').innerHTML = '';
+    renderQueue(data.queue, data.now_playing);
+  } else {
+    showToast('Fehler: ' + (data.error || 'Unbekannt'));
+  }
+}
+
+async function doSearch(term) {
+  const resultsDiv = document.getElementById('search-results');
+  resultsDiv.innerHTML = '<div class="search-loading">Suche…</div>';
+  const res = await fetch('/search?q=' + encodeURIComponent(term));
+  const items = await res.json();
+  if (!Array.isArray(items) || items.length === 0) {
+    resultsDiv.innerHTML = '<div class="search-empty">Keine Ergebnisse gefunden.</div>';
+    return;
+  }
+  resultsDiv.innerHTML = items.map((item, i) => `
+    <div class="search-result${item.embeddable === false ? ' not-embeddable' : ''}" data-idx="${i}">
+      <img class="search-thumb" src="${escAttr(item.thumbnail)}" alt="">
+      <div class="search-info">
+        <div class="search-title">${escHtml(item.title)}</div>
+        <div class="search-channel">${escHtml(item.channel)}${item.duration ? ' · ' + escHtml(item.duration) : ''}${item.embeddable === false ? ' · <span style="color:#f66">⚠ evtl. nicht abspielbar</span>' : ''}</div>
+      </div>
+      <button class="btn btn-primary btn-sm">+</button>
+    </div>`).join('');
+
+  resultsDiv._items = items;
+  resultsDiv.querySelectorAll('.search-result').forEach(el => {
+    function handleSelect(e) {
+      e.preventDefault();
+      const item = resultsDiv._items[+el.dataset.idx];
+      submitVideo(item.youtube_id, item.title, item.duration);
+    }
+    el.addEventListener('click', handleSelect);
+    el.addEventListener('touchend', handleSelect);
+  });
+}
+
+document.getElementById('raw-input').addEventListener('focus', () => {
+  if (!document.getElementById('raw-input').value.trim()) {
+    showRickSuggestion();
+  }
+});
+
+document.getElementById('raw-input').addEventListener('input', () => {
+  clearTimeout(searchTimeout);
+  const val = document.getElementById('raw-input').value.trim();
+  if (!val) { showRickSuggestion(); return; }
+  if (val.match(YOUTUBE_URL_RE)) { document.getElementById('search-results').innerHTML = ''; return; }
+  searchTimeout = setTimeout(() => doSearch(val), 400);
+});
+
+function showRickSuggestion() {
+  const resultsDiv = document.getElementById('search-results');
+  resultsDiv.innerHTML = `
+    <div class="search-result" data-idx="0">
+      <img class="search-thumb" src="https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg" alt="">
+      <div class="search-info">
+        <div class="search-title">Rick Astley – Never Gonna Give You Up</div>
+        <div class="search-channel">Rick Astley · 3:33</div>
+      </div>
+      <button class="btn btn-primary btn-sm">+</button>
+    </div>`;
+  resultsDiv._items = [{
+    youtube_id: 'dQw4w9WgXcQ',
+    title: 'Rick Astley – Never Gonna Give You Up',
+    duration: '3:33'
+  }];
+  resultsDiv.querySelectorAll('.search-result').forEach(el => {
+    function handleSelect(e) {
+      e.preventDefault();
+      const item = resultsDiv._items[0];
+      submitVideo(item.youtube_id, item.title, item.duration);
+    }
+    el.addEventListener('click', handleSelect);
+    el.addEventListener('touchend', handleSelect);
+  });
+}
+
+function renderQueue(q, np) {
+  const list = document.getElementById('queue-list');
+  document.getElementById('queue-count').textContent = q.length;
+  if (q.length === 0) {
+    list.innerHTML = '<li class="empty-msg">Noch keine Videos — füge das erste hinzu!</li>';
+    return;
+  }
+  list.innerHTML = q.map((item, i) => `
+    <li class="queue-item ${i === 0 ? 'playing' : ''}">
+      <span class="queue-num">${i + 1}</span>
+      <div class="queue-title-wrap">
+        <span class="queue-title">${escHtml(item.title)}</span>
+        <span class="queue-by">von ${escHtml(item.added_by || '?')}${item.duration ? ' · ' + escHtml(item.duration) : ''}</span>
+      </div>
+      ${i === 0 ? '<span class="now-badge">LÄUFT</span>' : ''}
+    </li>`).join('');
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escAttr(s) {
+  return String(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+document.getElementById('raw-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') addVideo();
+});
+
+setInterval(async () => {
+  const res = await fetch('/queue.json');
+  const data = await res.json();
+  renderQueue(data.queue, data.now_playing);
+}, 5000);
+</script>
+</body>
+</html>

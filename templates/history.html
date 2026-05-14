@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PartyQueue — History</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div class="logo">Party<span>Queue</span> <small style="font-size:0.7rem;color:var(--muted);font-weight:400;">History</small></div>
+  </div>
+
+  <div style="display:flex;gap:0.5rem;margin-bottom:1.2rem;">
+    <a href="/host" class="btn btn-neutral btn-sm">← Host</a>
+  </div>
+
+  {% if entries %}
+  <table class="history-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Uhrzeit</th>
+        <th>Titel</th>
+        <th>Von</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in entries|reverse %}
+      <tr>
+        <td class="history-num">{{ loop.revindex }}</td>
+        <td class="history-time">{{ e.time }}</td>
+        <td class="history-title">
+          <span style="cursor:pointer;color:var(--accent2);" onclick="addToQueue('{{ e.youtube_id }}', '{{ e.title|replace("'", "\\'") }}')">{{ e.title }}</span>
+        </td>
+        <td class="history-by">{{ e.added_by }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div style="color:var(--muted);font-size:0.82rem;margin-top:1rem;">{{ entries|length }} Songs insgesamt</div>
+  {% else %}
+  <div class="empty-msg">Noch keine History vorhanden.</div>
+  {% endif %}
+</div>
+
+<div id="toast"></div>
+
+<script>
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+async function addToQueue(youtube_id, title) {
+  const fd = new FormData();
+  fd.append('youtube_id', youtube_id);
+  fd.append('title', title);
+  const res = await fetch('/add', { method: 'POST', body: fd, headers: {'X-Requested-With': 'XMLHttpRequest'} });
+  const data = await res.json();
+  if (data.ok) {
+    showToast('Hinzugefügt: ' + title);
+  } else {
+    showToast('Fehler: ' + (data.error || 'Unbekannt'));
+  }
+}
+</script>
+</body>
+</html>

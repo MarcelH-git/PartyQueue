@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PartyQueue Host</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div class="logo">Party<span>Queue</span> <small style="font-size:0.7rem;color:var(--muted);font-weight:400;">Host</small></div>
+    <div class="ip-badge">{{ ip }}:5000</div>
+  </div>
+
+  {% if not authenticated %}
+  <div class="login-card">
+    <h2>Host-Login</h2>
+    {% if error %}<div class="error-msg">{{ error }}</div>{% endif %}
+    <form method="POST" action="/host">
+      <input type="password" name="password" placeholder="Passwort" autofocus>
+      <button type="submit" class="btn btn-primary">Einloggen</button>
+    </form>
+  </div>
+
+  {% else %}
+  <div style="display:flex;gap:0.5rem;margin-bottom:1.2rem;flex-wrap:wrap;">
+    <a href="/" class="btn btn-neutral btn-sm">Gäste-Ansicht</a>
+    <a href="/tv" class="btn btn-neutral btn-sm">TV-Ansicht</a>
+    <a href="/history" class="btn btn-neutral btn-sm">History</a>
+    <a href="/logout" class="btn btn-neutral btn-sm">Ausloggen</a>
+    <span style="margin-left:1rem;display:flex;gap:0.5rem;">
+      <button id="pause-btn" class="btn btn-primary btn-sm" onclick="togglePause()">⏸ Pause</button>
+      <button class="btn btn-neutral btn-sm" onclick="document.getElementById('settings-panel').style.display = document.getElementById('settings-panel').style.display === 'none' ? 'flex' : 'none'">⚙</button>
+    </span>
+  </div>
+  <div id="settings-panel" style="display:none;align-items:center;gap:0.4rem;margin-bottom:1.2rem;">
+    <span style="font-size:0.9rem;color:var(--muted);">Limit pro Gast:</span>
+    <button class="btn btn-neutral btn-sm" onclick="changeLimit(-1)">−</button>
+    <span id="limit-display" style="min-width:1.5rem;text-align:center;font-weight:700;">3</span>
+    <button class="btn btn-neutral btn-sm" onclick="changeLimit(1)">+</button>
+  </div>
+
+  <div class="add-form" style="margin-bottom:1.5rem;">
+    <h2>Song hinzufügen</h2>
+    <div class="input-row">
+      <input type="text" id="raw-input" placeholder="Songtitel oder YouTube-Link…" autocomplete="off">
+      <button class="btn btn-primary" onclick="addVideo()">Suchen</button>
+    </div>
+    <div id="search-results"></div>
+  </div>
+
+  <div class="queue-section">
+    <h2>Warteschlange (<span id="queue-count">{{ queue|length }}</span>)</h2>
+    <ul class="queue-list" id="queue-list">
+      {% if queue %}
+      {% for item in queue %}
+      <li class="queue-item {% if loop.first %}playing{% endif %}">
+        <span class="queue-num">{{ loop.index }}</span>
+        <div class="queue-title-wrap">
+          <span class="queue-title">{{ item.title }}</span>
+          <span class="queue-by">von {{ item.added_by }}</span>
+        </div>
+        {% if loop.first %}<span class="now-badge">LÄUFT</span>{% endif %}
+        <div class="queue-actions">
+          {% if loop.first %}
+          <form method="POST" action="/skip" style="display:inline;">
+            <button type="submit" class="btn btn-sm btn-skip" title="Überspringen">&#9654;&#9654;</button>
+          </form>
+          {% endif %}
+          {% if not loop.first %}
+          <form method="POST" action="/move/{{ loop.index0 }}/up" style="display:inline;">
+            <button type="submit" class="btn btn-sm btn-neutral" title="Nach oben">&#9650;</button>
+          </form>
+          {% endif %}
+          {% if not loop.last %}
+          <form method="POST" action="/move/{{ loop.index0 }}/down" style="display:inline;">
+            <button type="submit" class="btn btn-sm btn-neutral" title="Nach unten">&#9660;</button>
+          </form>
+          {% endif %}
+          <form method="POST" action="/delete/{{ loop.index0 }}" style="display:inline;">
+            <button type="submit" class="btn btn-sm btn-danger" title="Löschen">&#10005;</button>
+          </form>
+        </div>
+      </li>
+      {% endfor %}
+      {% else %}
+      <li class="empty-msg">Queue ist leer.</li>
+      {% endif %}
+    </ul>
+  </div>
+  {% endif %}
+</div>
+
+<div id="toast"></div>
+
+{% if authenticated %}
+<script>
+const YOUTUBE_URL_RE = /(?:v=|youtu\.be\/|embed\/|shorts\/)([A-Za-z0-9_-]{11})/;
+let searchTimeout = null;
+
+function showToast(msg, duration = 2500) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), duration);
+}
+
+async function addVideo() {
+  const raw = document.getElementById('raw-input').value.trim();
+  if (!raw) return;
+  const urlMatch = raw.match(YOUTUBE_URL_RE);
+  if (urlMatch) {
+    await submitVideo(urlMatch[1], `Video (${urlMatch[1]})`);
+  } else {
+    await doSearch(raw);
+  }
+}
+
+async function submitVideo(youtube_id, title, duration) {
+  const fd = new FormData();
+  fd.append('youtube_id', youtube_id);
+  fd.append('title', title);
+  if (duration) fd.append('duration', duration);
+  const res = await fetch('/add', {
+    method: 'POST', body: fd,
+    headers: {'X-Requested-With': 'XMLHttpRequest'}
+  });
+  const data = await res.json();
+  if (data.ok) {
+    showToast('Hinzugefügt: ' + title);
+    document.getElementById('raw-input').value = '';
+    document.getElementById('search-results').innerHTML = '';
+    renderQueue(data.queue, data.now_playing);
+  } else {
+    showToast('Fehler: ' + (data.error || 'Unbekannt'));
+  }
+}
+
+async function doSearch(term) {
+  const resultsDiv = document.getElementById('search-results');
+  resultsDiv.innerHTML = '<div class="search-loading">Suche…</div>';
+  const res = await fetch('/search?q=' + encodeURIComponent(term));
+  const items = await res.json();
+  if (!Array.isArray(items) || items.length === 0) {
+    resultsDiv.innerHTML = '<div class="search-empty">Keine Ergebnisse gefunden.</div>';
+    return;
+  }
+  resultsDiv.innerHTML = items.map((item, i) => `
+    <div class="search-result${item.embeddable === false ? ' not-embeddable' : ''}" data-idx="${i}">
+      <img class="search-thumb" src="${escAttr(item.thumbnail)}" alt="">
+      <div class="search-info">
+        <div class="search-title">${escHtml(item.title)}</div>
+        <div class="search-channel">${escHtml(item.channel)}${item.duration ? ' · ' + escHtml(item.duration) : ''}${item.embeddable === false ? ' · <span style="color:#f66">⚠ evtl. nicht abspielbar</span>' : ''}</div>
+      </div>
+      <button class="btn btn-primary btn-sm">+</button>
+    </div>`).join('');
+
+  resultsDiv._items = items;
+  resultsDiv.querySelectorAll('.search-result').forEach(el => {
+    el.addEventListener('click', () => {
+      const item = resultsDiv._items[+el.dataset.idx];
+      submitVideo(item.youtube_id, item.title, item.duration);
+    });
+  });
+}
+
+document.getElementById('raw-input').addEventListener('input', () => {
+  clearTimeout(searchTimeout);
+  const val = document.getElementById('raw-input').value.trim();
+  if (!val) { document.getElementById('search-results').innerHTML = ''; return; }
+  if (val.match(YOUTUBE_URL_RE)) return;
+  searchTimeout = setTimeout(() => doSearch(val), 400);
+});
+
+document.getElementById('raw-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') addVideo();
+});
+
+function renderQueue(q, np) {
+  const list = document.getElementById('queue-list');
+  document.getElementById('queue-count').textContent = q.length;
+  if (q.length === 0) {
+    list.innerHTML = '<li class="empty-msg">Queue ist leer.</li>';
+    return;
+  }
+  list.innerHTML = q.map((item, i) => `
+    <li class="queue-item ${i === 0 ? 'playing' : ''}">
+      <span class="queue-num">${i + 1}</span>
+      <div class="queue-title-wrap">
+        <span class="queue-title">${escHtml(item.title)}</span>
+        <span class="queue-by">von ${escHtml(item.added_by || '?')}${item.duration ? ' · ' + escHtml(item.duration) : ''}</span>
+      </div>
+      ${i === 0 ? '<span class="now-badge">LÄUFT</span>' : ''}
+      <div class="queue-actions">
+        ${i === 0 ? `<button class="btn btn-sm btn-skip" onclick="hostAction('/skip')">&#9654;&#9654;</button>` : ''}
+        ${i > 0 ? `<button class="btn btn-sm btn-neutral" onclick="hostAction('/move/${i}/up')">&#9650;</button>` : ''}
+        ${i < q.length - 1 ? `<button class="btn btn-sm btn-neutral" onclick="hostAction('/move/${i}/down')">&#9660;</button>` : ''}
+        <button class="btn btn-sm btn-danger" onclick="hostAction('/delete/${i}')">&#10005;</button>
+      </div>
+    </li>`).join('');
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escAttr(s) {
+  return String(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+async function hostAction(url) {
+  await fetch(url, { method: 'POST', headers: {'X-Requested-With': 'XMLHttpRequest'} });
+  const res = await fetch('/queue.json');
+  const data = await res.json();
+  renderQueue(data.queue, data.now_playing);
+  updatePauseBtn(data.paused, data.queue.length === 0);
+}
+
+let isPaused = false;
+async function togglePause() {
+  const btn = document.getElementById('pause-btn');
+  btn.disabled = true;
+  btn.style.opacity = '0.4';
+  isPaused = !isPaused;
+  await fetch(isPaused ? '/pause' : '/resume', { method: 'POST', headers: {'X-Requested-With': 'XMLHttpRequest'} });
+  await new Promise(r => setTimeout(r, 3000));
+  updatePauseBtn(isPaused, document.getElementById('queue-count').textContent === '0');
+}
+
+function updatePauseBtn(paused, queueEmpty) {
+  isPaused = paused;
+  const btn = document.getElementById('pause-btn');
+  btn.textContent = paused ? '▶ Weiter' : '⏸ Pause';
+  btn.className = paused ? 'btn btn-skip btn-sm' : 'btn btn-primary btn-sm';
+  btn.disabled = queueEmpty;
+  btn.style.opacity = queueEmpty ? '0.4' : '1';
+}
+
+async function changeLimit(delta) {
+  const current = parseInt(document.getElementById('limit-display').textContent);
+  const fd = new FormData();
+  fd.append('limit', current + delta);
+  const res = await fetch('/set_limit', { method: 'POST', body: fd, headers: {'X-Requested-With': 'XMLHttpRequest'} });
+  const data = await res.json();
+  if (data.limit !== undefined) document.getElementById('limit-display').textContent = data.limit;
+}
+
+async function refreshAll() {
+  const res = await fetch('/queue.json');
+  const data = await res.json();
+  renderQueue(data.queue, data.now_playing);
+  updatePauseBtn(data.paused, data.queue.length === 0);
+  if (data.guest_limit !== undefined) document.getElementById('limit-display').textContent = data.guest_limit;
+}
+
+refreshAll();
+setInterval(refreshAll, 5000);
+</script>
+{% endif %}
+</body>
+</html>
